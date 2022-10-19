@@ -75,12 +75,12 @@ def agent_learn(experiences, gamma):
 
 if __name__ == '__main__':
 
-    num_actions = 160
-    state_size = 323
+    num_actions = 143
+    unknown_state_size = 120
 
     # Q network
     q_network = Sequential([
-        Input(state_size),
+        Input(unknown_state_size),
         Dense(64, activation='relu'),
         Dense(64, activation='relu'),
         Dense(num_actions, activation='linear')
@@ -88,7 +88,7 @@ if __name__ == '__main__':
 
     # target Q network
     target_q_network = Sequential([
-        Input(state_size),
+        Input(unknown_state_size),
         Dense(64, activation='relu'),
         Dense(64, activation='relu'),
         Dense(num_actions, activation='linear')
@@ -96,7 +96,7 @@ if __name__ == '__main__':
 
     # I network
     i_network = Sequential([
-        Input(state_size),
+        Input(unknown_state_size),
         Dense(64, activation='relu'),
         Dense(64, activation='relu'),
         Dense(num_actions, activation='linear')
@@ -104,7 +104,7 @@ if __name__ == '__main__':
 
     # target I network
     target_i_network = Sequential([
-        Input(state_size),
+        Input(unknown_state_size),
         Dense(64, activation='relu'),
         Dense(64, activation='relu'),
         Dense(num_actions, activation='linear')

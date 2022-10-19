@@ -6,11 +6,38 @@ import numpy as np
 non_trump = 'bgpy'
 trump = 'z'
 SUITS = non_trump + trump
-DECK = ['{}{}'.format(color, number) for color in non_trump for number in range(1, 10)] + \
-    ['{}{}'.format(trump, number) for number in range(1, 5)]
-COMMS = ['{}{}{}'.format(color, number, modifier) for color in non_trump for number in range(1, 10) for modifier in 'hol']
+DECK_NON_TRUMP = ['{}{}'.format(color, number) for color in non_trump for number in range(1, 10)]
+DECK = DECK_NON_TRUMP + ['{}{}'.format(trump, number) for number in range(1, 5)]
+COMMS = ['{}{}{}'.format(color, number, modifier) for modifier in 'loh' for color in non_trump for number in range(1, 10)]
 DECK_ARRAY = np.array(DECK)
 DECK_SIZE = len(DECK)
+ACTIONS = DECK + COMMS
+
+##
+# Game state vector for 3 players
+#
+# 0-39 player 1's hand
+# 40-79 player 2's hand
+# 80-119 player 3's hand
+# 120-155 goal cards on the table
+# 156-191 player 1's goals
+# 192-227 player 2's goals
+# 228-263 player 3's goals
+# 264-266 players turn
+# 267-306 player 1 card in trick
+# 307-346 player 2 card in trick
+# 347-386 player 3 card in trick
+# 387 communication phase
+#
+
+##
+# action vector
+#
+# 0-35 play card or select goal
+# 36-71 communicate lowest
+# 72-107 communicate only
+# 108-143 communicate highest
+#
 
 def evaluate_trick(trick):
     if len(trick) == 0:
@@ -51,6 +78,111 @@ class CrewState():
         goals_cards = no_trump_deck[0:num_goals]
         state = CrewState(hands, goals_cards)
         return state
+
+    def to_vector(self):
+        v = np.zeros(363)
+
+        # hands
+        idx_start = 0
+        for pl in range(self.players):
+            for idx, card in enumerate(DECK):
+                if card in self.hands[pl]:
+                    v[idx_start + idx] = 1
+            idx_start += DECK_SIZE
+
+        # goals
+        # unassigned goals
+        for idx, card in enumerate(DECK_NON_TRUMP):
+            if card in self.goal_cards:
+                v[idx_start + idx] = 1
+        idx_start += len(DECK_NON_TRUMP)
+        # assigned goals
+        for pl in range(self.players):
+            for idx, card in enumerate(DECK_NON_TRUMP):
+                if card in self.goals[pl]:
+                    v[idx_start + idx] = 1
+            idx_start += len(DECK_NON_TRUMP)
+
+        # turn
+        v[idx_start + self.turn] = 1
+        idx_start += self.players
+
+        # cards in trick
+        for pl in range(self.players):
+            trick_idx = (self.leading + pl) % self.players
+            try:
+                trick_card = self.trick[trick_idx]
+            except(IndexError):
+                idx_start += DECK_SIZE
+                continue
+            card_idx = DECK.index(trick_card)
+            v[idx_start + card_idx] = 1
+            idx_start += DECK_SIZE
+
+        # communication phase
+        if self.communication_phase:
+            v[idx_start] = 1
+        idx_start += 1
+
+        return v
+
+    @staticmethod
+    def from_vector(v, captain=None, num_goals=None, coms=None):
+        # only supports 3 player game
+
+        # hands
+        hands = []
+        start_idx = 0
+        section = DECK_SIZE
+        for _ in range(3):
+            hands.append(list(DECK_ARRAY[np.where(v[start_idx: start_idx+section])==1]))
+            start_idx += section
+
+        # goals
+        # unassigned goals
+        section = len(DECK_NON_TRUMP)
+        goal_cards = list(DECK_ARRAY[np.where(v[start_idx: start_idx+section])==1])
+        state = CrewState(hands, goal_cards)
+        # assigned goals
+        goals = []
+        for _ in range(3):
+            goals.append(list(DECK_ARRAY[np.where(v[start_idx: start_idx+section])==1]))
+            start_idx += section
+        state.goals = goals
+
+        # turn
+        section = 3
+        state.turn = np.where(v[start_idx: start_idx + section]==1)[0]
+        start_idx += section
+
+        # card in trick
+        section = DECK_SIZE
+        plays_in_trick_so_far = v[start_idx: start_idx + section*3].sum()
+        state.leading = (state.turn - plays_in_trick_so_far) % 3
+        for idx in range(3-1):
+            pl = (state.leading + idx)% 3
+            card_idxs = np.where(v[start_idx + pl*section: start_idx + (pl+1)*section]==1)
+            if len(card_idxs) > 0:
+                state.trick.append(DECK[card_idxs[0]])
+        start_idx += section*3
+
+        # communication phase
+        if v[start_idx] == 1:
+            state.communication_phase = True
+        start_idx += 1
+
+        # other things
+        state.captain = captain
+        state.num_goals = num_goals
+        cards_in_play = list(itertools.chain(state.hands)) + state.trick
+        state.discard = [c for c in DECK if c not in cards_in_play]
+        if len(state.goal_cards) > 0:
+            state.select_goals_phase = True
+        state.coms = coms
+        state.rounds_left = state.total_rounds - len(state.discard)//3
+
+        return state
+
 
     def player_with(self, card):
         player = None
