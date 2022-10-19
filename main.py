@@ -1,3 +1,15 @@
+import time
+from collections import deque, namedtuple
+
+import numpy as np
+import tensorflow as tf
+import utils
+
+from tensorflow.keras import Sequential
+from tensorflow.keras.layers import Dense, Input
+from tensorflow.keras.losses import MSE
+from tensorflow.keras.optimizers import Adam
+
 from collections import namedtuple
 
 from tensorflow.keras.layers import Dense, Input
@@ -7,6 +19,8 @@ from tensorflow.keras.optimizers import Adam
 import tensorflow as tf
 import utils
 import time
+
+from crew import CrewState
 
 
 def compute_loss(experiences, gamma, q_network, target_q_network, sigmoid=False):
@@ -77,36 +91,38 @@ if __name__ == '__main__':
 
     num_actions = 143
     unknown_state_size = 120
+    layer_1_size = 64
+    layer_2_size = 64
 
     # Q network
     q_network = Sequential([
         Input(unknown_state_size),
-        Dense(64, activation='relu'),
-        Dense(64, activation='relu'),
+        Dense(layer_1_size, activation='relu'),
+        Dense(layer_2_size, activation='relu'),
         Dense(num_actions, activation='linear')
     ])
 
     # target Q network
     target_q_network = Sequential([
         Input(unknown_state_size),
-        Dense(64, activation='relu'),
-        Dense(64, activation='relu'),
+        Dense(layer_1_size, activation='relu'),
+        Dense(layer_2_size, activation='relu'),
         Dense(num_actions, activation='linear')
     ])
 
     # I network
     i_network = Sequential([
         Input(unknown_state_size),
-        Dense(64, activation='relu'),
-        Dense(64, activation='relu'),
+        Dense(layer_1_size, activation='relu'),
+        Dense(layer_2_size, activation='relu'),
         Dense(num_actions, activation='linear')
     ])
 
     # target I network
     target_i_network = Sequential([
         Input(unknown_state_size),
-        Dense(64, activation='relu'),
-        Dense(64, activation='relu'),
+        Dense(layer_1_size, activation='relu'),
+        Dense(layer_2_size, activation='relu'),
         Dense(num_actions, activation='linear')
     ])
 
@@ -120,6 +136,10 @@ if __name__ == '__main__':
 
     num_episodes = 2000
     max_num_timesteps = 1000
+    MEMORY_SIZE = 100_000  # size of memory buffer
+    GAMMA = 0.995  # discount factor
+    ALPHA = 1e-3  # learning rate
+    NUM_STEPS_FOR_UPDATE = 4  # perform a learning update every C time steps
 
     total_point_history = []
 
@@ -135,7 +155,9 @@ if __name__ == '__main__':
     for i in range(num_episodes):
 
         # Reset the environment to the initial state and get the initial state
-        state = env.reset()
+        np.random.seed(i)
+        env = CrewState.generate(3, 1)
+        state = env.to_vector()
         total_points = 0
 
         for t in range(max_num_timesteps):
@@ -146,7 +168,7 @@ if __name__ == '__main__':
             action = utils.get_action(q_values, epsilon)
 
             # Take action A and receive reward R and the next state S'
-            next_state, reward, done, _ = env.step(action)
+            next_state, reward, done, _ = env.move(action)
 
             # Store experience tuple (S,A,R,S') in the memory buffer.
             # We store the done variable as well for convenience.

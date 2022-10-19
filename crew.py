@@ -23,11 +23,12 @@ ACTIONS = DECK + COMMS
 # 156-191 player 1's goals
 # 192-227 player 2's goals
 # 228-263 player 3's goals
-# 264-266 players turn
+# 264-266 player leading
 # 267-306 player 1 card in trick
 # 307-346 player 2 card in trick
 # 347-386 player 3 card in trick
-# 387 communication phase
+# 387-389 players turn
+# 390 communication phase
 #
 
 ##
@@ -67,17 +68,21 @@ class CrewState():
         self.total_rounds = DECK_SIZE//self.players
         self.rounds_left = DECK_SIZE//self.players
         self.trick = []
+        self.game_result = None
 
     @staticmethod
     def generate(players: int = 3, num_goals: int = 2):
         deck = copy(DECK)
         np.random.shuffle(deck)
-        hands = [DECK[(i * DECK_SIZE) // players:((i + 1) * DECK_SIZE) // players] for i in range(players)]
+        hands = [deck[(i * DECK_SIZE) // players:((i + 1) * DECK_SIZE) // players] for i in range(players)]
         no_trump_deck = copy(DECK[:-4])
         np.random.shuffle(no_trump_deck)
         goals_cards = no_trump_deck[0:num_goals]
         state = CrewState(hands, goals_cards)
         return state
+
+    def reward(self):
+        pass
 
     def to_vector(self):
         v = np.zeros(363)
@@ -103,8 +108,8 @@ class CrewState():
                     v[idx_start + idx] = 1
             idx_start += len(DECK_NON_TRUMP)
 
-        # turn
-        v[idx_start + self.turn] = 1
+        # leading
+        v[idx_start + self.leading] = 1
         idx_start += self.players
 
         # cards in trick
@@ -118,6 +123,10 @@ class CrewState():
             card_idx = DECK.index(trick_card)
             v[idx_start + card_idx] = 1
             idx_start += DECK_SIZE
+
+        # turn
+        v[idx_start + self.turn] = 1
+        idx_start += self.players
 
         # communication phase
         if self.communication_phase:
@@ -150,21 +159,24 @@ class CrewState():
             start_idx += section
         state.goals = goals
 
-        # turn
+        # leading
         section = 3
-        state.turn = np.where(v[start_idx: start_idx + section]==1)[0]
+        state.leading = np.where(v[start_idx: start_idx + section]==1)[0]
         start_idx += section
 
         # card in trick
         section = DECK_SIZE
-        plays_in_trick_so_far = v[start_idx: start_idx + section*3].sum()
-        state.leading = (state.turn - plays_in_trick_so_far) % 3
-        for idx in range(3-1):
+        for idx in range(3):
             pl = (state.leading + idx)% 3
             card_idxs = np.where(v[start_idx + pl*section: start_idx + (pl+1)*section]==1)
             if len(card_idxs) > 0:
                 state.trick.append(DECK[card_idxs[0]])
         start_idx += section*3
+
+        # turn
+        section = 3
+        state.turn = np.where(v[start_idx: start_idx + section]==1)[0]
+        start_idx += section
 
         # communication phase
         if v[start_idx] == 1:
@@ -191,25 +203,26 @@ class CrewState():
                 player = pl
         return player
 
-    @property
-    def goals_remaining(self):
-        return sum([len(goal) for goal in self.goals])
 
-    @property
-    def game_result(self):
-        if not self.select_goals_phase:
-            players_with_goals_left = 0
-            for pl in self.goals:
-                if len(pl) > 0:
-                    players_with_goals_left += 1
-                    for c in pl:
-                        if c in self.discard:
-                            return 0 # if the goal is still active and in the discard pile, there is no way to win
-            if players_with_goals_left == 0:
-                return 1
-            if players_with_goals_left > self.rounds_left:
-                return 0
-        return None
+    def _determine_game_result(self):
+        if self.game_result is None:
+            if not self.select_goals_phase:
+                if len(self.trick) == self.players:
+                    players_with_goals_left = 0
+                    for pl, players_goals in enumerate(self.goals):
+                        if pl == self.turn:
+                            players_goals = [g for g in players_goals if g not in self.trick]
+                        if len(players_goals) > 0:
+                            players_with_goals_left += 1
+                            for c in players_goals:
+                                if c in self.trick:
+                                    self.game_result = 0
+                                    return
+                    if players_with_goals_left == 0:
+                        self.game_result = 1
+                        return
+                    if players_with_goals_left > self.rounds_left:
+                        self.game_result = 0
 
     def is_game_over(self):
         return self.game_result is not None
@@ -232,18 +245,25 @@ class CrewState():
                 new.communication_phase = False
                 new.turn = new.captain
             return new
+        if len(new.trick) == self.players:
+            new.discard += new.trick
+            new.trick = []
+            new.leading = new.turn
+            new.goals[new.turn] = [g for g in new.goals[new.turn] if g not in new.trick]
         new.trick.append(move)
         new.hands[new.turn].remove(move)
         if len(new.trick) < new.players:
             new.turn = (new.turn + 1) % self.players
             return new
         winner = (evaluate_trick(new.trick) + new.leading) % new.players
-        new.goals[winner] = [g for g in new.goals[winner] if g not in new.trick]
-        new.discard += new.trick # add trick to discard
-        new.trick = []
+        # new.goals[winner] = [g for g in new.goals[winner] if g not in new.trick]
+        # new.discard += new.trick # add trick to discard
+        # new.trick = []
         new.rounds_left -= 1
-        new.leading = winner
+        # new.leading = winner
         new.turn = winner
+        if len(new.trick) == self.players:
+            self._determine_game_result() # update game result variable
         return new
 
     def is_move_legal(self, move):
@@ -266,7 +286,7 @@ class CrewState():
             return False
         if not move in full_hand: # you dont have this card in your hand
             return False
-        if len(self.trick) > 0:
+        if len(self.trick) not in [0, self.players]:
             leading_suit = self.trick[0][0] # you must follow suit if you can
             if leading_suit in [c[0] for c in full_hand]:
                 return move[0] == leading_suit
@@ -300,4 +320,42 @@ class CrewState():
             return [None]
         return copy(DECK)
 
+    def sort_hands(self):
+        for h in self.hands:
+            h.sort()
+
+    def print(self):
+        # just implemented for 3 players
+        self.sort_hands()
+
+        #unassigned goals
+        if len(self.goal_cards) > 0:
+            print('{:<15}:{:^75s}'.format('UNASSIGNED', '  '.join(self.goal_cards)))
+        # assigned goals
+        goal_str = [' '.join(g) for g in self.goals]
+        print('{:<15}:{:^24s}|{:^24s}|{:^24s}'.format('ASSIGNED', *goal_str))
+
+        # table
+        trick_str = ['  ', '  ', '  ']
+        for idx, c in enumerate(self.trick):
+            trick_str[(self.leading + idx) % self.players] = c
+        trick_str[self.leading] += '*'
+        trick_str[self.turn] = '[' + trick_str[self.turn] + ']'
+        print('{:<15}:{:^24s}|{:^24s}|{:^24s}'.format('TABLE', *trick_str))
+
+if __name__ == '__main__':
+    np.random.seed(10000)
+    state = CrewState.generate(3, 4)
+    state.print()
+    state = state.move('y8')
+    state = state.move('b1')
+    state = state.move('g9')
+    state = state.move('g4')
+    state.print()
+    state = state.move('p1l')
+    state = state.move('b4o')
+    state = state.move('p5h')
+    state = state.move('z4')
+    state = state.move('z1')
+    state.print()
 
