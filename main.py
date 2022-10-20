@@ -11,6 +11,7 @@ from tensorflow.keras.losses import MSE
 from tensorflow.keras.optimizers import Adam
 
 from collections import namedtuple
+from copy import copy
 
 from tensorflow.keras.layers import Dense, Input
 from tensorflow.keras import Sequential
@@ -45,12 +46,11 @@ def compute_loss(experiences, gamma, q_network, target_q_network, sigmoid=False)
 
     # Unpack the mini-batch of experience tuples
     # these are arrays with 10000 or so values inside of them
-    states, actions, rewards, next_states, done_vals = experiences
+    states, actions, rewards, next_states, done_vals, next_allowable_actions = experiences
 
     # Compute max Q^(s,a)
     # use get legal actions
-    #todo your going to have to use a mask here try: tf.boolean_mask(tensor, mask, axis), get from experience
-    max_qsa = tf.reduce_max(target_q_network(next_states), axis=-1)
+    max_qsa = tf.reduce_max((target_q_network(next_states) + (next_allowable_actions-1)*10000), axis=-1)
 
     # Set y = R if episode terminates, otherwise set y = R + γ max Q^(s,a).
     y_targets = rewards + (1 - done_vals) * gamma * max_qsa
@@ -72,14 +72,15 @@ def compute_loss(experiences, gamma, q_network, target_q_network, sigmoid=False)
 
 if __name__ == '__main__':
 
-    num_actions = 143
-    unknown_state_size = 120
-    layer_1_size = 64
-    layer_2_size = 64
+    num_actions = 41
+    state_size = 510
+    # unknown_state_size = 120
+    layer_1_size = 512
+    layer_2_size = 256
 
     # Q network
     q_network = Sequential([
-        Input(unknown_state_size),
+        Input(state_size),
         Dense(layer_1_size, activation='relu'),
         Dense(layer_2_size, activation='relu'),
         Dense(num_actions, activation='linear')
@@ -87,7 +88,7 @@ if __name__ == '__main__':
 
     # target Q network
     target_q_network = Sequential([
-        Input(unknown_state_size),
+        Input(state_size),
         Dense(layer_1_size, activation='relu'),
         Dense(layer_2_size, activation='relu'),
         Dense(num_actions, activation='linear')
@@ -176,59 +177,58 @@ if __name__ == '__main__':
         env = CrewState.generate(players, num_goals)
         v = env.to_vector()
         prob_vector = np.full(120, 1.0 / players)
+        prob_vector_priv = np.full(120, 1.0 / (players-1))
         for idx in range(players):
             val = 0
             if idx == env.captain:
                 val = 1
             prob_vector[(idx + 1) * DECK_SIZE - 1] = val
+            prob_vector_priv[(idx + 1) * DECK_SIZE - 1] = val
+
         true_hands = v[0:120] #120
         public_hands = prob_vector.copy() #120
-        private_hands = np.array([prob_vector, prob_vector, prob_vector]) #120x3
+        private_hands = np.array([prob_vector_priv, prob_vector_priv, prob_vector_priv]) #120x3
         for pl in range(players):
-            true_hand = true_hands[pl, pl*40: (pl+1)*40]
-            mask = true_hand + true_hands + true_hand
+            true_hand = true_hands[pl*DECK_SIZE: (pl+1)*DECK_SIZE]
+            private_hands[pl, pl*DECK_SIZE: (pl+1)*DECK_SIZE] = true_hand
+            mask = np.concatenate([true_hand, true_hand, true_hand])
             private_hands[pl, np.where(mask==1)] = 0
-            private_hands[pl, pl * 40: (pl + 1) * 40] = true_hand
+            private_hands[pl, pl * DECK_SIZE: (pl + 1) * DECK_SIZE] = true_hand
         state_other = v[120:]  # 271
         allowable_actions = [ACTIONS.index(a) for a in env.get_legal_actions()]
-
-        prob_vector = np.full(120, 1.0/players)
-        for idx in range(players):
-            val = 0
-            if idx == env.captain:
-                val = 1
-            prob_vector[(idx + 1) * DECK_SIZE - 1] = val
 
         total_points = 0
 
         for t in range(max_num_timesteps):
 
             # From the current state S choose an action A using an ε-greedy policy
-            this_state = private_hands[:,env.turn] + public_hands + state_other # construct inputs to q network
+            this_state = np.concatenate([private_hands[env.turn, :], public_hands, state_other]) # construct inputs to q network
             state_qn = np.expand_dims(this_state, axis=0)  # state needs to be the right shape for the q_network
             q_values = q_network(state_qn)
+            done = env.done()
             action = utils.get_action(q_values, allowable_actions, epsilon)
-
-            #todo use imply function
-            # utils.imply()
+            new_env = env.move(ACTIONS[action])
 
             # Take action A and receive reward R and the next state S'
-            new_env = env.move(ACTIONS[action])
             reward = env.reward()
-            done = env.done()
 
             # maybe instead of using a huge named tuple you could construct next state take the form of the next
             # action to be used in the Q function...
-            v = env.to_vector()
+            v = new_env.to_vector()
             next_true_hands = v[0:120]  # 120
             next_public_hands = utils.imply(public_hands, action)  # 120
-            next_private_hands = utils.imply(private_hands, action)  # 120x3
+            priv_list = []
+            for pl in range(players):
+                priv_list.append(utils.imply(private_hands[pl, :], action))
+            next_private_hands = np.array(priv_list)  # 120x3
             next_state_other = v[120:]  # 271
-            next_allowable_actions = [ACTIONS.index(a) for a in env.get_legal_actions()]
+            next_allowable_actions = [ACTIONS.index(a) for a in new_env.get_legal_actions()]
             # Store experience tuple (S,A,R,S') in the memory buffer.
             # We store the done variable as well for convenience.
-            next_state = next_private_hands[:,new_env.turn] + next_public_hands + next_state_other
-            memory_buffer.append(experience(this_state, action, reward, next_state, done, next_allowable_actions))
+            next_state = np.concatenate([next_private_hands[new_env.turn, :], next_public_hands, next_state_other])
+            next_actions_binary = np.zeros(num_actions)
+            next_actions_binary[next_allowable_actions] = 1
+            memory_buffer.append(experience(this_state, action, reward, next_state, done, next_actions_binary))
 
             # Only update the network every NUM_STEPS_FOR_UPDATE time steps.
             update = utils.check_update_conditions(t, NUM_STEPS_FOR_UPDATE, memory_buffer)

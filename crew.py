@@ -11,7 +11,7 @@ DECK = DECK_NON_TRUMP + ['{}{}'.format(trump, number) for number in range(1, 5)]
 COMMS = ['{}{}{}'.format(color, number, modifier) for modifier in 'loh' for color in non_trump for number in range(1, 10)]
 DECK_ARRAY = np.array(DECK)
 DECK_SIZE = len(DECK)
-ACTIONS = DECK
+ACTIONS = DECK + ['-']
 
 # remove communication for now
 
@@ -36,6 +36,7 @@ ACTIONS = DECK
 # action vector
 #
 # 0-39 play card or select goal
+# 40 do nothing
 #
 
 def evaluate_trick(trick):
@@ -91,7 +92,7 @@ class CrewState():
         return score
 
     def to_vector(self):
-        v = np.zeros(363)
+        v = np.zeros(390)
 
         # hands
         idx_start = 0
@@ -240,13 +241,15 @@ class CrewState():
 
     def move(self, move):
         new = deepcopy(self)
+        if move == '-':
+            return new
         if new.select_goals_phase:
             new.goals[new.turn].append(move)
             new.goal_cards.remove(move)
             new.turn = (new.turn + 1) % self.players
             if len(new.goal_cards) == 0:
                 new.select_goals_phase = False
-                new.communication_phase = True
+                # new.communication_phase = True
                 new.turn = new.captain
             return new
         # if new.communication_phase:
@@ -274,7 +277,7 @@ class CrewState():
         # new.leading = winner
         new.turn = winner
         if len(new.trick) == self.players:
-            self._determine_game_result() # update game result variable
+            new._determine_game_result() # update game result variable
         return new
 
     def is_move_legal(self, move):
@@ -320,7 +323,10 @@ class CrewState():
                         allowable.append(in_suit[0] + 'l')
                         allowable.append(in_suit[-1] + 'h')
             return allowable
-        return [c for c in full_hand if self.is_move_legal(c)]
+        list_of_actions = [c for c in full_hand if self.is_move_legal(c)]
+        if len(list_of_actions) == 0:
+            list_of_actions = ['-']
+        return list_of_actions
 
     def get_all_actions(self):
         if self.select_goals_phase:

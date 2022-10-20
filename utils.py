@@ -12,7 +12,7 @@ import tensorflow as tf
 # from statsmodels.iolib.table import SimpleTable
 
 SEED = 0  # seed for pseudo-random number generator
-MINIBATCH_SIZE = 64  # mini-batch size
+MINIBATCH_SIZE = 256  # mini-batch size
 TAU = 1e-3  # soft update parameter
 E_DECAY = 0.995  # ε decay rate for ε-greedy policy
 E_MIN = 0.01  # minimum ε value for ε-greedy policy
@@ -22,13 +22,14 @@ random.seed(SEED)
 
 def get_experiences(memory_buffer):
     experiences = random.sample(memory_buffer, k=MINIBATCH_SIZE)
-    states = tf.convert_to_tensor(np.array([e.known_state for e in experiences if e is not None]), dtype=tf.float32)
+    states = tf.convert_to_tensor(np.array([e.state for e in experiences if e is not None]), dtype=tf.float32)
     actions = tf.convert_to_tensor(np.array([e.action for e in experiences if e is not None]), dtype=tf.float32)
     rewards = tf.convert_to_tensor(np.array([e.reward for e in experiences if e is not None]), dtype=tf.float32)
     next_states = tf.convert_to_tensor(np.array([e.next_state for e in experiences if e is not None]), dtype=tf.float32)
     done_vals = tf.convert_to_tensor(np.array([e.done for e in experiences if e is not None]).astype(np.uint8),
                                      dtype=tf.float32)
-    return (states, actions, rewards, next_states, done_vals)
+    allowable_actions_of_next_state_vals = tf.convert_to_tensor(np.array([e.allowable_actions_of_next_state for e in experiences if e is not None]), dtype=tf.float32)
+    return (states, actions, rewards, next_states, done_vals, allowable_actions_of_next_state_vals)
 
 
 def check_update_conditions(t, num_steps_upd, memory_buffer):
@@ -43,9 +44,8 @@ def get_new_eps(epsilon):
 
 
 def get_action(q_values, allowable_actions, epsilon=0):
-    #todo take allowable actions mask
     if random.random() > epsilon:
-        return np.argmax(q_values.numpy()[0][allowable_actions])
+        return allowable_actions[np.argmax(q_values.numpy()[0][allowable_actions])]
     else:
         return random.choice(allowable_actions)
 
@@ -139,6 +139,8 @@ def update_target_network(q_network, target_q_network):
 def imply(s, a):
     # this should be improved to handle short suiting inferences
     new_s = s.copy()
+    if a == 40:
+        return new_s
     for i in range(3):
         new_s[40*i + a] = 0
     return new_s
