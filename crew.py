@@ -11,7 +11,9 @@ DECK = DECK_NON_TRUMP + ['{}{}'.format(trump, number) for number in range(1, 5)]
 COMMS = ['{}{}{}'.format(color, number, modifier) for modifier in 'loh' for color in non_trump for number in range(1, 10)]
 DECK_ARRAY = np.array(DECK)
 DECK_SIZE = len(DECK)
-ACTIONS = DECK + COMMS
+ACTIONS = DECK
+
+# remove communication for now
 
 ##
 # Game state vector for 3 players
@@ -28,16 +30,12 @@ ACTIONS = DECK + COMMS
 # 307-346 player 2 card in trick
 # 347-386 player 3 card in trick
 # 387-389 players turn
-# 390 communication phase
 #
 
 ##
 # action vector
 #
-# 0-35 play card or select goal
-# 36-71 communicate lowest
-# 72-107 communicate only
-# 108-143 communicate highest
+# 0-39 play card or select goal
 #
 
 def evaluate_trick(trick):
@@ -82,7 +80,15 @@ class CrewState():
         return state
 
     def reward(self):
-        pass
+        score = 0
+        if len(self.trick) == self.players:
+            completed_goals = [g for g in self.goals[self.turn] if g in self.trick]
+            score += len(completed_goals)
+        if self.game_result == 1:
+            score += 100
+        if self.game_result == 0:
+            score -= 100
+        return score
 
     def to_vector(self):
         v = np.zeros(363)
@@ -129,9 +135,9 @@ class CrewState():
         idx_start += self.players
 
         # communication phase
-        if self.communication_phase:
-            v[idx_start] = 1
-        idx_start += 1
+        # if self.communication_phase:
+        #     v[idx_start] = 1
+        # idx_start += 1
 
         return v
 
@@ -179,9 +185,9 @@ class CrewState():
         start_idx += section
 
         # communication phase
-        if v[start_idx] == 1:
-            state.communication_phase = True
-        start_idx += 1
+        # if v[start_idx] == 1:
+        #     state.communication_phase = True
+        # start_idx += 1
 
         # other things
         state.captain = captain
@@ -194,6 +200,11 @@ class CrewState():
         state.rounds_left = state.total_rounds - len(state.discard)//3
 
         return state
+
+    def done(self):
+        if self.game_result is None:
+            return 0
+        return 1
 
 
     def player_with(self, card):
@@ -236,15 +247,15 @@ class CrewState():
             if len(new.goal_cards) == 0:
                 new.select_goals_phase = False
                 new.communication_phase = True
-                new.turn = 0
-            return new
-        if new.communication_phase:
-            new.coms.append(move)
-            new.turn = (new.turn + 1) % self.players
-            if len(new.coms) == 3:
-                new.communication_phase = False
                 new.turn = new.captain
             return new
+        # if new.communication_phase:
+        #     new.coms.append(move)
+        #     new.turn = (new.turn + 1) % self.players
+        #     if len(new.coms) == 3:
+        #         new.communication_phase = False
+        #         new.turn = new.captain
+        #     return new
         if len(new.trick) == self.players:
             new.discard += new.trick
             new.trick = []
@@ -352,9 +363,9 @@ if __name__ == '__main__':
     state = state.move('g9')
     state = state.move('g4')
     state.print()
-    state = state.move('p1l')
-    state = state.move('b4o')
-    state = state.move('p5h')
+    # state = state.move('p1l')
+    # state = state.move('b4o')
+    # state = state.move('p5h')
     state = state.move('z4')
     state = state.move('z1')
     state.print()

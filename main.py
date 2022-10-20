@@ -20,7 +20,12 @@ import tensorflow as tf
 import utils
 import time
 
-from crew import CrewState
+from crew import CrewState, DECK_SIZE, ACTIONS
+
+
+# dont use communication for the time being
+# first create a network that uses a simple implication function
+# eventually this will have to be trained as well
 
 
 def compute_loss(experiences, gamma, q_network, target_q_network, sigmoid=False):
@@ -39,9 +44,12 @@ def compute_loss(experiences, gamma, q_network, target_q_network, sigmoid=False)
     """
 
     # Unpack the mini-batch of experience tuples
+    # these are arrays with 10000 or so values inside of them
     states, actions, rewards, next_states, done_vals = experiences
 
     # Compute max Q^(s,a)
+    # use get legal actions
+    #todo your going to have to use a mask here try: tf.boolean_mask(tensor, mask, axis), get from experience
     max_qsa = tf.reduce_max(target_q_network(next_states), axis=-1)
 
     # Set y = R if episode terminates, otherwise set y = R + γ max Q^(s,a).
@@ -49,42 +57,17 @@ def compute_loss(experiences, gamma, q_network, target_q_network, sigmoid=False)
 
     # Get the q_values
     q_values = q_network(states)
-    q_values = tf.gather_nd(q_values, tf.stack([tf.range(q_values.shape[0]),
-                                                tf.cast(actions, tf.int32)], axis=1))
+    q_values = tf.gather_nd(q_values, tf.stack([tf.range(q_values.shape[0]), # this just gets the Q values associated with the single action
+                                                tf.cast(actions, tf.int32)], axis=1)) # this could be a useful function for the above
 
     # Compute the loss
-    if sigmoid:
-        bce = BinaryCrossentropy(from_logits=True)
-        loss = bce(y_targets, q_values)
-    else:
-        loss = MSE(y_targets, q_values)
+    # if sigmoid:
+    #     bce = BinaryCrossentropy(from_logits=True)
+    #     loss = bce(y_targets, q_values)
+    # else:
+    loss = MSE(y_targets, q_values)
 
     return loss
-
-
-@tf.function
-def agent_learn(experiences, gamma):
-    """
-    Updates the weights of the Q networks.
-
-    Args:
-      experiences: (tuple) tuple of ["state", "action", "reward", "next_state", "done"] namedtuples
-      gamma: (float) The discount factor.
-
-    """
-
-    # Calculate the loss
-    with tf.GradientTape() as tape:
-        loss = compute_loss(experiences, gamma, q_network, target_q_network)
-
-    # Get the gradients of the loss with respect to the weights.
-    gradients = tape.gradient(loss, q_network.trainable_variables)
-
-    # Update the weights of the q_network.
-    optimizer.apply_gradients(zip(gradients, q_network.trainable_variables))
-
-    # update the weights of target q_network
-    utils.update_target_network(q_network, target_q_network)
 
 
 if __name__ == '__main__':
@@ -110,27 +93,59 @@ if __name__ == '__main__':
         Dense(num_actions, activation='linear')
     ])
 
-    # I network
-    i_network = Sequential([
-        Input(unknown_state_size),
-        Dense(layer_1_size, activation='relu'),
-        Dense(layer_2_size, activation='relu'),
-        Dense(num_actions, activation='linear')
-    ])
-
-    # target I network
-    target_i_network = Sequential([
-        Input(unknown_state_size),
-        Dense(layer_1_size, activation='relu'),
-        Dense(layer_2_size, activation='relu'),
-        Dense(num_actions, activation='linear')
-    ])
+    # # I network
+    # i_network = Sequential([
+    #     Input(unknown_state_size),
+    #     Dense(layer_1_size, activation='relu'),
+    #     Dense(layer_2_size, activation='relu'),
+    #     Dense(num_actions, activation='linear')
+    # ])
+    #
+    # # target I network
+    # target_i_network = Sequential([
+    #     Input(unknown_state_size),
+    #     Dense(layer_1_size, activation='relu'),
+    #     Dense(layer_2_size, activation='relu'),
+    #     Dense(num_actions, activation='linear')
+    # ])
 
     optimizer = Adam()
 
+
+    @tf.function
+    def agent_learn(experiences, gamma):
+        """
+        Updates the weights of the Q networks.
+
+        Args:
+          experiences: (tuple) tuple of ["state", "action", "reward", "next_state", "done"] namedtuples
+          gamma: (float) The discount factor.
+
+        """
+
+        # Calculate the loss
+        with tf.GradientTape() as tape:
+            loss = compute_loss(experiences, gamma, q_network, target_q_network)
+
+        # Get the gradients of the loss with respect to the weights.
+        gradients = tape.gradient(loss, q_network.trainable_variables)
+
+        # Update the weights of the q_network.
+        optimizer.apply_gradients(zip(gradients, q_network.trainable_variables))
+
+        # update the weights of target q_network
+        utils.update_target_network(q_network, target_q_network)
+
+
     # Store experiences as named tuples
     experience = namedtuple("Experience",
-                            field_names=["true_state", "known_state", "action", "reward", "next_state", "done"])
+                            field_names=["state", # 511
+                                         "action", # single value 0-39
+                                         "reward", # reward for current state: float
+                                         "next_state", # 511
+                                         "done", # if this current state is done: 0-1
+                                         "allowable_actions_of_next_state", # array of indices of allowable actions
+                                         ])
 
     start = time.time()
 
@@ -156,23 +171,64 @@ if __name__ == '__main__':
 
         # Reset the environment to the initial state and get the initial state
         np.random.seed(i)
-        env = CrewState.generate(3, 1)
-        state = env.to_vector()
+        players = 3
+        num_goals = 1
+        env = CrewState.generate(players, num_goals)
+        v = env.to_vector()
+        prob_vector = np.full(120, 1.0 / players)
+        for idx in range(players):
+            val = 0
+            if idx == env.captain:
+                val = 1
+            prob_vector[(idx + 1) * DECK_SIZE - 1] = val
+        true_hands = v[0:120] #120
+        public_hands = prob_vector.copy() #120
+        private_hands = np.array([prob_vector, prob_vector, prob_vector]) #120x3
+        for pl in range(players):
+            true_hand = true_hands[pl, pl*40: (pl+1)*40]
+            mask = true_hand + true_hands + true_hand
+            private_hands[pl, np.where(mask==1)] = 0
+            private_hands[pl, pl * 40: (pl + 1) * 40] = true_hand
+        state_other = v[120:]  # 271
+        allowable_actions = [ACTIONS.index(a) for a in env.get_legal_actions()]
+
+        prob_vector = np.full(120, 1.0/players)
+        for idx in range(players):
+            val = 0
+            if idx == env.captain:
+                val = 1
+            prob_vector[(idx + 1) * DECK_SIZE - 1] = val
+
         total_points = 0
 
         for t in range(max_num_timesteps):
 
             # From the current state S choose an action A using an ε-greedy policy
-            state_qn = np.expand_dims(state, axis=0)  # state needs to be the right shape for the q_network
+            this_state = private_hands[:,env.turn] + public_hands + state_other # construct inputs to q network
+            state_qn = np.expand_dims(this_state, axis=0)  # state needs to be the right shape for the q_network
             q_values = q_network(state_qn)
-            action = utils.get_action(q_values, epsilon)
+            action = utils.get_action(q_values, allowable_actions, epsilon)
+
+            #todo use imply function
+            # utils.imply()
 
             # Take action A and receive reward R and the next state S'
-            next_state, reward, done, _ = env.move(action)
+            new_env = env.move(ACTIONS[action])
+            reward = env.reward()
+            done = env.done()
 
+            # maybe instead of using a huge named tuple you could construct next state take the form of the next
+            # action to be used in the Q function...
+            v = env.to_vector()
+            next_true_hands = v[0:120]  # 120
+            next_public_hands = utils.imply(public_hands, action)  # 120
+            next_private_hands = utils.imply(private_hands, action)  # 120x3
+            next_state_other = v[120:]  # 271
+            next_allowable_actions = [ACTIONS.index(a) for a in env.get_legal_actions()]
             # Store experience tuple (S,A,R,S') in the memory buffer.
             # We store the done variable as well for convenience.
-            memory_buffer.append(experience(state, action, reward, next_state, done))
+            next_state = next_private_hands[:,new_env.turn] + next_public_hands + next_state_other
+            memory_buffer.append(experience(this_state, action, reward, next_state, done, next_allowable_actions))
 
             # Only update the network every NUM_STEPS_FOR_UPDATE time steps.
             update = utils.check_update_conditions(t, NUM_STEPS_FOR_UPDATE, memory_buffer)
@@ -185,7 +241,12 @@ if __name__ == '__main__':
                 # and update the network weights.
                 agent_learn(experiences, GAMMA)
 
-            state = next_state.copy()
+            env = new_env
+            true_hands = next_true_hands
+            public_hands = next_public_hands  # 120
+            private_hands = next_private_hands  # 120x3
+            state_other = next_state_other # 271
+            allowable_actions = next_allowable_actions
             total_points += reward
 
             if done:
