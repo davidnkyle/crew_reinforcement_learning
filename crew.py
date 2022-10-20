@@ -2,6 +2,9 @@ import itertools
 from copy import copy, deepcopy
 
 import numpy as np
+import random
+
+import utils
 
 non_trump = 'bgpy'
 trump = 'z'
@@ -69,15 +72,15 @@ class CrewState():
         self.trick = []
         self.game_result = None
 
-    @staticmethod
-    def generate(players: int = 3, num_goals: int = 2):
+    @classmethod
+    def generate(cls, players: int = 3, num_goals: int = 2):
         deck = copy(DECK)
         np.random.shuffle(deck)
         hands = [deck[(i * DECK_SIZE) // players:((i + 1) * DECK_SIZE) // players] for i in range(players)]
         no_trump_deck = copy(DECK[:-4])
         np.random.shuffle(no_trump_deck)
         goals_cards = no_trump_deck[0:num_goals]
-        state = CrewState(hands, goals_cards)
+        state = cls(hands, goals_cards)
         return state
 
     def reward(self):
@@ -239,7 +242,7 @@ class CrewState():
     def is_game_over(self):
         return self.game_result is not None
 
-    def move(self, move):
+    def _move(self, move):
         new = deepcopy(self)
         if move == '-':
             return new
@@ -279,6 +282,9 @@ class CrewState():
         if len(new.trick) == self.players:
             new._determine_game_result() # update game result variable
         return new
+
+    def move(self, move):
+        return self._move(move)
 
     def is_move_legal(self, move):
         if self.select_goals_phase:
@@ -360,9 +366,61 @@ class CrewState():
         trick_str[self.turn] = '[' + trick_str[self.turn] + ']'
         print('{:<15}:{:^24s}|{:^24s}|{:^24s}'.format('TABLE', *trick_str))
 
+class CrewStateExpanded(CrewState):
+    def __int__(self, hands, goal_cards):
+        players = len(hands)
+        prob_vector = np.full(120, 1.0 / players)
+        prob_vector_priv = np.full(120, 1.0 / (players - 1))
+        self.public_hands = prob_vector
+        self.private_hands = np.array([prob_vector_priv]*players)
+        super().__init__(hands=hands, goal_cards=goal_cards)
+
+        for idx in range(self.players):
+            val = 0
+            if idx == self.captain:
+                val = 1
+            prob_vector[(idx + 1) * DECK_SIZE - 1] = val
+            prob_vector_priv[(idx + 1) * DECK_SIZE - 1] = val
+        self.public_hands = prob_vector
+        true_hands = self.to_vector()[0:120]
+        for pl in range(self.players):
+            true_hand = true_hands[pl * DECK_SIZE: (pl + 1) * DECK_SIZE]
+            self.private_hands[pl, pl * DECK_SIZE: (pl + 1) * DECK_SIZE] = true_hand
+            mask = np.concatenate([true_hand, true_hand, true_hand])
+            self.private_hands[pl, np.where(mask == 1)] = 0
+            self.private_hands[pl, pl * DECK_SIZE: (pl + 1) * DECK_SIZE] = true_hand
+
+    def move(self, move, i_network=None):
+        # eventually implement an i network
+        new = self._move(move)
+        action = ACTIONS.index(move)
+        new.public_hands = utils.imply(self.public_hands, action)  # 120
+        priv_list = []
+        for pl in range(self.players):
+            priv_list.append(utils.imply(self.private_hands[pl, :], action))
+        new.private_hands = np.array(priv_list)  # 120x3
+        return new
+
+    def state_for_q_network(self):
+        state_other = self.to_vector()[120:]
+        this_state = np.concatenate(
+            [self.private_hands[self.turn, :], self.public_hands, state_other])  # construct inputs to q network
+        return this_state
+
+    def choose_action(self, q_network, epsilon=-1):
+        this_state = self.state_for_q_network()
+        state_qn = np.expand_dims(this_state, axis=0)  # state needs to be the right shape for the q_network
+        q_values = q_network(state_qn)
+        allowable_actions = [ACTIONS.index(a) for a in self.get_legal_actions()]
+        if random.random() > epsilon:
+            return allowable_actions[np.argmax(q_values.numpy()[0][allowable_actions])]
+        else:
+            return random.choice(allowable_actions)
+
+
 if __name__ == '__main__':
     np.random.seed(10000)
-    state = CrewState.generate(3, 4)
+    state = CrewStateExpanded.generate(3, 4)
     state.print()
     state = state.move('y8')
     state = state.move('b1')
@@ -375,4 +433,3 @@ if __name__ == '__main__':
     state = state.move('z4')
     state = state.move('z1')
     state.print()
-

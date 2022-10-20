@@ -21,7 +21,7 @@ import tensorflow as tf
 import utils
 import time
 
-from crew import CrewState, DECK_SIZE, ACTIONS
+from crew import CrewState, DECK_SIZE, ACTIONS, CrewStateExpanded
 
 
 # dont use communication for the time being
@@ -174,27 +174,27 @@ if __name__ == '__main__':
         np.random.seed(i)
         players = 3
         num_goals = 1
-        env = CrewState.generate(players, num_goals)
-        v = env.to_vector()
-        prob_vector = np.full(120, 1.0 / players)
-        prob_vector_priv = np.full(120, 1.0 / (players-1))
-        for idx in range(players):
-            val = 0
-            if idx == env.captain:
-                val = 1
-            prob_vector[(idx + 1) * DECK_SIZE - 1] = val
-            prob_vector_priv[(idx + 1) * DECK_SIZE - 1] = val
-
-        true_hands = v[0:120] #120
-        public_hands = prob_vector.copy() #120
-        private_hands = np.array([prob_vector_priv, prob_vector_priv, prob_vector_priv]) #120x3
-        for pl in range(players):
-            true_hand = true_hands[pl*DECK_SIZE: (pl+1)*DECK_SIZE]
-            private_hands[pl, pl*DECK_SIZE: (pl+1)*DECK_SIZE] = true_hand
-            mask = np.concatenate([true_hand, true_hand, true_hand])
-            private_hands[pl, np.where(mask==1)] = 0
-            private_hands[pl, pl * DECK_SIZE: (pl + 1) * DECK_SIZE] = true_hand
-        state_other = v[120:]  # 271
+        env = CrewStateExpanded.generate(players, num_goals)
+        # v = env.to_vector()
+        # prob_vector = np.full(120, 1.0 / players)
+        # prob_vector_priv = np.full(120, 1.0 / (players-1))
+        # for idx in range(players):
+        #     val = 0
+        #     if idx == env.captain:
+        #         val = 1
+        #     prob_vector[(idx + 1) * DECK_SIZE - 1] = val
+        #     prob_vector_priv[(idx + 1) * DECK_SIZE - 1] = val
+        #
+        # true_hands = v[0:120] #120
+        # public_hands = prob_vector.copy() #120
+        # private_hands = np.array([prob_vector_priv, prob_vector_priv, prob_vector_priv]) #120x3
+        # for pl in range(players):
+        #     true_hand = true_hands[pl*DECK_SIZE: (pl+1)*DECK_SIZE]
+        #     private_hands[pl, pl*DECK_SIZE: (pl+1)*DECK_SIZE] = true_hand
+        #     mask = np.concatenate([true_hand, true_hand, true_hand])
+        #     private_hands[pl, np.where(mask==1)] = 0
+        #     private_hands[pl, pl * DECK_SIZE: (pl + 1) * DECK_SIZE] = true_hand
+        # state_other = v[120:]  # 271
         allowable_actions = [ACTIONS.index(a) for a in env.get_legal_actions()]
 
         total_points = 0
@@ -202,11 +202,11 @@ if __name__ == '__main__':
         for t in range(max_num_timesteps):
 
             # From the current state S choose an action A using an ε-greedy policy
-            this_state = np.concatenate([private_hands[env.turn, :], public_hands, state_other]) # construct inputs to q network
-            state_qn = np.expand_dims(this_state, axis=0)  # state needs to be the right shape for the q_network
-            q_values = q_network(state_qn)
+            this_state = env.state_for_q_network()
+            # state_qn = np.expand_dims(this_state, axis=0)  # state needs to be the right shape for the q_network
+            # q_values = q_network(state_qn)
             done = env.done()
-            action = utils.get_action(q_values, allowable_actions, epsilon)
+            action = env.choose_action(q_network=q_network, epsilon=epsilon)
             new_env = env.move(ACTIONS[action])
 
             # Take action A and receive reward R and the next state S'
@@ -214,18 +214,18 @@ if __name__ == '__main__':
 
             # maybe instead of using a huge named tuple you could construct next state take the form of the next
             # action to be used in the Q function...
-            v = new_env.to_vector()
-            next_true_hands = v[0:120]  # 120
-            next_public_hands = utils.imply(public_hands, action)  # 120
-            priv_list = []
-            for pl in range(players):
-                priv_list.append(utils.imply(private_hands[pl, :], action))
-            next_private_hands = np.array(priv_list)  # 120x3
-            next_state_other = v[120:]  # 271
+            # v = new_env.to_vector()
+            # next_true_hands = v[0:120]  # 120
+            # next_public_hands = utils.imply(public_hands, action)  # 120
+            # priv_list = []
+            # for pl in range(players):
+            #     priv_list.append(utils.imply(private_hands[pl, :], action))
+            # next_private_hands = np.array(priv_list)  # 120x3
+            # next_state_other = v[120:]  # 271
             next_allowable_actions = [ACTIONS.index(a) for a in new_env.get_legal_actions()]
             # Store experience tuple (S,A,R,S') in the memory buffer.
             # We store the done variable as well for convenience.
-            next_state = np.concatenate([next_private_hands[new_env.turn, :], next_public_hands, next_state_other])
+            next_state = new_env.state_for_q_network()
             next_actions_binary = np.zeros(num_actions)
             next_actions_binary[next_allowable_actions] = 1
             memory_buffer.append(experience(this_state, action, reward, next_state, done, next_actions_binary))
@@ -242,10 +242,10 @@ if __name__ == '__main__':
                 agent_learn(experiences, GAMMA)
 
             env = new_env
-            true_hands = next_true_hands
-            public_hands = next_public_hands  # 120
-            private_hands = next_private_hands  # 120x3
-            state_other = next_state_other # 271
+            # true_hands = next_true_hands
+            # public_hands = next_public_hands  # 120
+            # private_hands = next_private_hands  # 120x3
+            # state_other = next_state_other # 271
             allowable_actions = next_allowable_actions
             total_points += reward
 
@@ -266,9 +266,9 @@ if __name__ == '__main__':
 
         # We will consider that the environment is solved if we get an
         # average of 200 points in the last 100 episodes.
-        if av_latest_points >= 200.0:
+        if av_latest_points >= 95.0:
             print(f"\n\nEnvironment solved in {i + 1} episodes!")
-            q_network.save('lunar_lander_model.h5')
+            q_network.save('crew_model.h5')
             break
 
     tot_time = time.time() - start
