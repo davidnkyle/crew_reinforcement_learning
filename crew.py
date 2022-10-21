@@ -374,8 +374,10 @@ class CrewState():
             list_of_actions = ['-']
         return list_of_actions
 
-    def choose_action(self, model, epsilon=-1):
+    def choose_action(self, model=None, epsilon=-1):
         allowable_actions = [ACTIONS.index(a) for a in self.get_legal_actions()]
+        if model is None:
+            epsilon = 2
         if random.random() > epsilon:
             v = self.to_vector()
             best_action = '-'
