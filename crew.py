@@ -21,18 +21,21 @@ ACTIONS = DECK + ['-']
 ##
 # Game state vector for 3 players
 #
-# 0-39 player 1's hand
-# 40-79 player 2's hand
-# 80-119 player 3's hand
-# 120-155 goal cards on the table
-# 156-191 player 1's goals
-# 192-227 player 2's goals
-# 228-263 player 3's goals
-# 264-266 player leading
-# 267-306 player 1 card in trick
-# 307-346 player 2 card in trick
-# 347-386 player 3 card in trick
-# 387-389 players turn
+# 0-39 player 1's hand private (40) 0, 0.5, 1
+# 40-79 player 2's hand private (40) 0, 0.5, 1
+# 80-119 player 3's hand private (40) 0, 0.5, 1
+# 120-159 player 1's hand public (40) 0, 0.5, 1
+# 160-199 player 2's hand public (40) 0, 0.5, 1
+# 200-239 player 3's hand public (40) 0, 0.5, 1
+# 240-275 goal cards on the table (36) 0, 1
+# 276-311 player 1's goals (36) 0, 1
+# 312-347 player 2's goals (36) 0, 1
+# 348-383 player 3's goals (36) 0, 1
+# 384-386 player leading (3) 0, 1
+# 387-426 player 1 card in trick (40) 0, 1
+# 427-466 player 2 card in trick (40) 0, 1
+# 467-506 player 3 card in trick (40) 0, 1
+# 507-509 players turn (3) 0, 1
 #
 
 ##
@@ -124,14 +127,19 @@ class CrewState():
         return score
 
     def to_vector(self):
-        v = np.zeros(390)
+        v = np.zeros(510)
 
-        # hands
         idx_start = 0
+
+        # hands private
+        hands_private = self.hands_private[self.turn]
         for pl in range(self.players):
-            for idx, card in enumerate(DECK):
-                if card in self.hands[pl]:
-                    v[idx_start + idx] = 1
+            v[idx_start: idx_start+DECK_SIZE] = hands_private[:, pl]
+            idx_start += DECK_SIZE
+
+        # hands public
+        for pl in range(self.players):
+            v[idx_start: idx_start+DECK_SIZE] = self.hands_public[:, pl]
             idx_start += DECK_SIZE
 
         # goals
@@ -173,66 +181,66 @@ class CrewState():
         # idx_start += 1
 
         return v
-
-    @staticmethod
-    def from_vector(v, captain=None, num_goals=None, coms=None):
-        # only supports 3 player game
-
-        # hands
-        hands = []
-        start_idx = 0
-        section = DECK_SIZE
-        for _ in range(3):
-            hands.append(list(DECK_ARRAY[np.where(v[start_idx: start_idx+section])==1]))
-            start_idx += section
-
-        # goals
-        # unassigned goals
-        section = len(DECK_NON_TRUMP)
-        goal_cards = list(DECK_ARRAY[np.where(v[start_idx: start_idx+section])==1])
-        state = CrewState(hands, goal_cards)
-        # assigned goals
-        goals = []
-        for _ in range(3):
-            goals.append(list(DECK_ARRAY[np.where(v[start_idx: start_idx+section])==1]))
-            start_idx += section
-        state.goals = goals
-
-        # leading
-        section = 3
-        state.leading = np.where(v[start_idx: start_idx + section]==1)[0]
-        start_idx += section
-
-        # card in trick
-        section = DECK_SIZE
-        for idx in range(3):
-            pl = (state.leading + idx)% 3
-            card_idxs = np.where(v[start_idx + pl*section: start_idx + (pl+1)*section]==1)
-            if len(card_idxs) > 0:
-                state.trick.append(DECK[card_idxs[0]])
-        start_idx += section*3
-
-        # turn
-        section = 3
-        state.turn = np.where(v[start_idx: start_idx + section]==1)[0]
-        start_idx += section
-
-        # communication phase
-        # if v[start_idx] == 1:
-        #     state.communication_phase = True
-        # start_idx += 1
-
-        # other things
-        state.captain = captain
-        state.num_goals = num_goals
-        cards_in_play = list(itertools.chain(state.hands)) + state.trick
-        state.discard = [c for c in DECK if c not in cards_in_play]
-        if len(state.goal_cards) > 0:
-            state.select_goals_phase = True
-        state.coms = coms
-        state.rounds_left = state.total_rounds - len(state.discard)//3
-
-        return state
+    #
+    # @staticmethod
+    # def from_vector(v, captain=None, num_goals=None, coms=None):
+    #     # only supports 3 player game
+    #
+    #     # hands
+    #     hands = []
+    #     start_idx = 0
+    #     section = DECK_SIZE
+    #     for _ in range(3):
+    #         hands.append(list(DECK_ARRAY[np.where(v[start_idx: start_idx+section])==1]))
+    #         start_idx += section
+    #
+    #     # goals
+    #     # unassigned goals
+    #     section = len(DECK_NON_TRUMP)
+    #     goal_cards = list(DECK_ARRAY[np.where(v[start_idx: start_idx+section])==1])
+    #     state = CrewState(hands, goal_cards)
+    #     # assigned goals
+    #     goals = []
+    #     for _ in range(3):
+    #         goals.append(list(DECK_ARRAY[np.where(v[start_idx: start_idx+section])==1]))
+    #         start_idx += section
+    #     state.goals = goals
+    #
+    #     # leading
+    #     section = 3
+    #     state.leading = np.where(v[start_idx: start_idx + section]==1)[0]
+    #     start_idx += section
+    #
+    #     # card in trick
+    #     section = DECK_SIZE
+    #     for idx in range(3):
+    #         pl = (state.leading + idx)% 3
+    #         card_idxs = np.where(v[start_idx + pl*section: start_idx + (pl+1)*section]==1)
+    #         if len(card_idxs) > 0:
+    #             state.trick.append(DECK[card_idxs[0]])
+    #     start_idx += section*3
+    #
+    #     # turn
+    #     section = 3
+    #     state.turn = np.where(v[start_idx: start_idx + section]==1)[0]
+    #     start_idx += section
+    #
+    #     # communication phase
+    #     # if v[start_idx] == 1:
+    #     #     state.communication_phase = True
+    #     # start_idx += 1
+    #
+    #     # other things
+    #     state.captain = captain
+    #     state.num_goals = num_goals
+    #     cards_in_play = list(itertools.chain(state.hands)) + state.trick
+    #     state.discard = [c for c in DECK if c not in cards_in_play]
+    #     if len(state.goal_cards) > 0:
+    #         state.select_goals_phase = True
+    #     state.coms = coms
+    #     state.rounds_left = state.total_rounds - len(state.discard)//3
+    #
+    #     return state
 
     def done(self):
         if self.game_result is None:
