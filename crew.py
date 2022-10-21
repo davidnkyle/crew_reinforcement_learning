@@ -36,15 +36,14 @@ ACTIONS = DECK + ['-']
 # 427-466 player 2 card in trick (40) 0, 1
 # 467-506 player 3 card in trick (40) 0, 1
 # 507-509 players turn (3) 0, 1
+# 510-550 action (41) 0, 1
 #
 
-##
-# action vector
-#
-# 0-39 play card or select goal
-# 40 do nothing
-#
 
+def action_vec(action: int):
+    v = np.zeros(len(ACTIONS))
+    v[action] = 1
+    return v
 
 def evaluate_trick(trick):
     if len(trick) == 0:
@@ -67,7 +66,7 @@ class CrewState():
             idxs = [idx for idx, c in enumerate(DECK) if c in hand]
             self.hands_private[pl][:,pl] = 0 # this player knows they have no other cards
             self.hands_private[pl][idxs, :] = 0 # this player knows everyone else doesn't have their cards
-            self.hands_private[pl][idxs, pl] = idxs # this player knows they have their cards
+            self.hands_private[pl][idxs, pl] = 1 # this player knows they have their cards
         self.discard = []
         self.captain = self.player_with(DECK[-1])
         self.player_has(self.captain, DECK_SIZE-1)
@@ -300,10 +299,11 @@ class CrewState():
         #         new.turn = new.captain
         #     return new
         if len(new.trick) == self.players:
+            new.goals[new.turn] = [g for g in new.goals[new.turn] if g not in new.trick]
             new.discard += new.trick
             new.trick = []
             new.leading = new.turn
-            new.goals[new.turn] = [g for g in new.goals[new.turn] if g not in new.trick]
+
         # if player is short suited remove that from the list of possibilities
         if len(new.trick) > 0:
             leading_suit = new.trick[0][0]
@@ -374,14 +374,21 @@ class CrewState():
             list_of_actions = ['-']
         return list_of_actions
 
-    def get_all_actions(self):
-        if self.select_goals_phase:
-            return copy(self.goal_cards)
-        if self.communication_phase:
-            if self.coms[self.turn] is None:
-                return copy(COMMS)
-            return [None]
-        return copy(DECK)
+    def choose_action(self, model, epsilon=-1):
+        allowable_actions = [ACTIONS.index(a) for a in self.get_legal_actions()]
+        if random.random() > epsilon:
+            v = self.to_vector()
+            best_action = '-'
+            best_reward = -np.inf
+            for action in allowable_actions:
+                x = np.concatenate([v, action_vec(action)])
+                y_pred = model.predict(x)
+                if y_pred > best_reward:
+                    best_action = action
+            return best_action
+        else:
+            return random.choice(allowable_actions)
+
 
     def sort_hands(self):
         for h in self.hands:
@@ -405,62 +412,11 @@ class CrewState():
         trick_str[self.leading] += '*'
         trick_str[self.turn] = '[' + trick_str[self.turn] + ']'
         print('{:<15}:{:^24s}|{:^24s}|{:^24s}'.format('TABLE', *trick_str))
-#
-# class CrewStateExpanded(CrewState):
-#     def __int__(self, hands, goal_cards):
-#         players = len(hands)
-#         prob_vector = np.full(120, 1.0 / players)
-#         prob_vector_priv = np.full(120, 1.0 / (players - 1))
-#         self.public_hands = prob_vector
-#         self.private_hands = np.array([prob_vector_priv]*players)
-#         super().__init__(hands=hands, goal_cards=goal_cards)
-#
-#         for idx in range(self.players):
-#             val = 0
-#             if idx == self.captain:
-#                 val = 1
-#             prob_vector[(idx + 1) * DECK_SIZE - 1] = val
-#             prob_vector_priv[(idx + 1) * DECK_SIZE - 1] = val
-#         self.public_hands = prob_vector
-#         true_hands = self.to_vector()[0:120]
-#         for pl in range(self.players):
-#             true_hand = true_hands[pl * DECK_SIZE: (pl + 1) * DECK_SIZE]
-#             self.private_hands[pl, pl * DECK_SIZE: (pl + 1) * DECK_SIZE] = true_hand
-#             mask = np.concatenate([true_hand, true_hand, true_hand])
-#             self.private_hands[pl, np.where(mask == 1)] = 0
-#             self.private_hands[pl, pl * DECK_SIZE: (pl + 1) * DECK_SIZE] = true_hand
-#
-#     def move(self, move, i_network=None):
-#         # eventually implement an i network
-#         new = self._move(move)
-#         action = ACTIONS.index(move)
-#         new.public_hands = utils.imply(self.public_hands, action)  # 120
-#         priv_list = []
-#         for pl in range(self.players):
-#             priv_list.append(utils.imply(self.private_hands[pl, :], action))
-#         new.private_hands = np.array(priv_list)  # 120x3
-#         return new
-#
-#     def state_for_q_network(self):
-#         state_other = self.to_vector()[120:]
-#         this_state = np.concatenate(
-#             [self.private_hands[self.turn, :], self.public_hands, state_other])  # construct inputs to q network
-#         return this_state
-#
-#     def choose_action(self, q_network, epsilon=-1):
-#         this_state = self.state_for_q_network()
-#         state_qn = np.expand_dims(this_state, axis=0)  # state needs to be the right shape for the q_network
-#         q_values = q_network(state_qn)
-#         allowable_actions = [ACTIONS.index(a) for a in self.get_legal_actions()]
-#         if random.random() > epsilon:
-#             return allowable_actions[np.argmax(q_values.numpy()[0][allowable_actions])]
-#         else:
-#             return random.choice(allowable_actions)
 
 
 if __name__ == '__main__':
     np.random.seed(10000)
-    state = CrewStateExpanded.generate(3, 4)
+    state = CrewState.generate(3, 4)
     state.print()
     state = state.move('y8')
     state = state.move('b1')
@@ -470,6 +426,9 @@ if __name__ == '__main__':
     # state = state.move('p1l')
     # state = state.move('b4o')
     # state = state.move('p5h')
-    state = state.move('z4')
-    state = state.move('z1')
+    state = state.move('g7')
+    state = state.move('g4')
+    state = state.move('g5')
+    state.print()
+    state = state.move('y8')
     state.print()
