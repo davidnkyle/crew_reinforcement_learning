@@ -42,6 +42,7 @@ ACTIONS = DECK + ['-']
 # 40 do nothing
 #
 
+
 def evaluate_trick(trick):
     if len(trick) == 0:
         raise ValueError('No trick to evaluate')
@@ -57,8 +58,16 @@ class CrewState():
         if (self.players < 3) or (self.players > 5):
             raise ValueError('Only allow between 3 and 5 players')
         self.hands = hands
+        self.hands_public = np.full((DECK_SIZE, self.players), 0.5)
+        self.hands_private = [np.full((DECK_SIZE, self.players), 0.5) for _ in range(self.players)]
+        for pl, hand in enumerate(hands):
+            idxs = [idx for idx, c in enumerate(DECK) if c in hand]
+            self.hands_private[pl][:,pl] = 0 # this player knows they have no other cards
+            self.hands_private[pl][idxs, :] = 0 # this player knows everyone else doesn't have their cards
+            self.hands_private[pl][idxs, pl] = idxs # this player knows they have their cards
         self.discard = []
         self.captain = self.player_with(DECK[-1])
+        self.player_has(self.captain, DECK_SIZE-1)
         self.leading = self.captain
         self.turn = self.captain
         self.num_goals = len(goal_cards)
@@ -71,6 +80,26 @@ class CrewState():
         self.rounds_left = DECK_SIZE//self.players
         self.trick = []
         self.game_result = None
+
+    def player_has(self, player, idx):
+        self.nobody_has(idx)
+        for pl in range(self.players):
+            self.hands_private[pl][idx, player] = 1
+        self.hands_public[idx, player] = 1
+
+    def nobody_has(self, idx):
+        for pl in range(self.players):
+            self.hands_private[pl][idx, :] = 0
+        self.hands_public[idx, :] = 0
+
+    def player_shortsuited(self, player, suit):
+        suit_idx = SUITS.index(suit)
+        start = suit_idx*9
+        end = min((suit_idx+1)*9, 40)
+        for pl in range(self.players):
+            self.hands_private[pl][start:end, player] = 0
+        self.hands_public[start:end, player] = 0
+
 
     @classmethod
     def generate(cls, players: int = 3, num_goals: int = 2):
@@ -242,7 +271,7 @@ class CrewState():
     def is_game_over(self):
         return self.game_result is not None
 
-    def _move(self, move):
+    def move(self, move):
         new = deepcopy(self)
         if move == '-':
             return new
@@ -267,8 +296,14 @@ class CrewState():
             new.trick = []
             new.leading = new.turn
             new.goals[new.turn] = [g for g in new.goals[new.turn] if g not in new.trick]
+        # if player is short suited remove that from the list of possibilities
+        if len(new.trick) > 0:
+            leading_suit = new.trick[0][0]
+            if move[0] != leading_suit:
+                new.player_shortsuited(new.turn, leading_suit)
         new.trick.append(move)
         new.hands[new.turn].remove(move)
+        new.nobody_has(DECK.index(move))
         if len(new.trick) < new.players:
             new.turn = (new.turn + 1) % self.players
             return new
@@ -282,9 +317,6 @@ class CrewState():
         if len(new.trick) == self.players:
             new._determine_game_result() # update game result variable
         return new
-
-    def move(self, move):
-        return self._move(move)
 
     def is_move_legal(self, move):
         if self.select_goals_phase:
@@ -365,57 +397,57 @@ class CrewState():
         trick_str[self.leading] += '*'
         trick_str[self.turn] = '[' + trick_str[self.turn] + ']'
         print('{:<15}:{:^24s}|{:^24s}|{:^24s}'.format('TABLE', *trick_str))
-
-class CrewStateExpanded(CrewState):
-    def __int__(self, hands, goal_cards):
-        players = len(hands)
-        prob_vector = np.full(120, 1.0 / players)
-        prob_vector_priv = np.full(120, 1.0 / (players - 1))
-        self.public_hands = prob_vector
-        self.private_hands = np.array([prob_vector_priv]*players)
-        super().__init__(hands=hands, goal_cards=goal_cards)
-
-        for idx in range(self.players):
-            val = 0
-            if idx == self.captain:
-                val = 1
-            prob_vector[(idx + 1) * DECK_SIZE - 1] = val
-            prob_vector_priv[(idx + 1) * DECK_SIZE - 1] = val
-        self.public_hands = prob_vector
-        true_hands = self.to_vector()[0:120]
-        for pl in range(self.players):
-            true_hand = true_hands[pl * DECK_SIZE: (pl + 1) * DECK_SIZE]
-            self.private_hands[pl, pl * DECK_SIZE: (pl + 1) * DECK_SIZE] = true_hand
-            mask = np.concatenate([true_hand, true_hand, true_hand])
-            self.private_hands[pl, np.where(mask == 1)] = 0
-            self.private_hands[pl, pl * DECK_SIZE: (pl + 1) * DECK_SIZE] = true_hand
-
-    def move(self, move, i_network=None):
-        # eventually implement an i network
-        new = self._move(move)
-        action = ACTIONS.index(move)
-        new.public_hands = utils.imply(self.public_hands, action)  # 120
-        priv_list = []
-        for pl in range(self.players):
-            priv_list.append(utils.imply(self.private_hands[pl, :], action))
-        new.private_hands = np.array(priv_list)  # 120x3
-        return new
-
-    def state_for_q_network(self):
-        state_other = self.to_vector()[120:]
-        this_state = np.concatenate(
-            [self.private_hands[self.turn, :], self.public_hands, state_other])  # construct inputs to q network
-        return this_state
-
-    def choose_action(self, q_network, epsilon=-1):
-        this_state = self.state_for_q_network()
-        state_qn = np.expand_dims(this_state, axis=0)  # state needs to be the right shape for the q_network
-        q_values = q_network(state_qn)
-        allowable_actions = [ACTIONS.index(a) for a in self.get_legal_actions()]
-        if random.random() > epsilon:
-            return allowable_actions[np.argmax(q_values.numpy()[0][allowable_actions])]
-        else:
-            return random.choice(allowable_actions)
+#
+# class CrewStateExpanded(CrewState):
+#     def __int__(self, hands, goal_cards):
+#         players = len(hands)
+#         prob_vector = np.full(120, 1.0 / players)
+#         prob_vector_priv = np.full(120, 1.0 / (players - 1))
+#         self.public_hands = prob_vector
+#         self.private_hands = np.array([prob_vector_priv]*players)
+#         super().__init__(hands=hands, goal_cards=goal_cards)
+#
+#         for idx in range(self.players):
+#             val = 0
+#             if idx == self.captain:
+#                 val = 1
+#             prob_vector[(idx + 1) * DECK_SIZE - 1] = val
+#             prob_vector_priv[(idx + 1) * DECK_SIZE - 1] = val
+#         self.public_hands = prob_vector
+#         true_hands = self.to_vector()[0:120]
+#         for pl in range(self.players):
+#             true_hand = true_hands[pl * DECK_SIZE: (pl + 1) * DECK_SIZE]
+#             self.private_hands[pl, pl * DECK_SIZE: (pl + 1) * DECK_SIZE] = true_hand
+#             mask = np.concatenate([true_hand, true_hand, true_hand])
+#             self.private_hands[pl, np.where(mask == 1)] = 0
+#             self.private_hands[pl, pl * DECK_SIZE: (pl + 1) * DECK_SIZE] = true_hand
+#
+#     def move(self, move, i_network=None):
+#         # eventually implement an i network
+#         new = self._move(move)
+#         action = ACTIONS.index(move)
+#         new.public_hands = utils.imply(self.public_hands, action)  # 120
+#         priv_list = []
+#         for pl in range(self.players):
+#             priv_list.append(utils.imply(self.private_hands[pl, :], action))
+#         new.private_hands = np.array(priv_list)  # 120x3
+#         return new
+#
+#     def state_for_q_network(self):
+#         state_other = self.to_vector()[120:]
+#         this_state = np.concatenate(
+#             [self.private_hands[self.turn, :], self.public_hands, state_other])  # construct inputs to q network
+#         return this_state
+#
+#     def choose_action(self, q_network, epsilon=-1):
+#         this_state = self.state_for_q_network()
+#         state_qn = np.expand_dims(this_state, axis=0)  # state needs to be the right shape for the q_network
+#         q_values = q_network(state_qn)
+#         allowable_actions = [ACTIONS.index(a) for a in self.get_legal_actions()]
+#         if random.random() > epsilon:
+#             return allowable_actions[np.argmax(q_values.numpy()[0][allowable_actions])]
+#         else:
+#             return random.choice(allowable_actions)
 
 
 if __name__ == '__main__':
