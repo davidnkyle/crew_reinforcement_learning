@@ -114,6 +114,45 @@ class CrewState():
         state = cls(hands, goals_cards)
         return state
 
+    @classmethod
+    def gen_mid_game(cls, players: int = 3, max_goals: int = 1, round: int = 1, cards_in_trick: int = 0):
+        deck = copy(DECK)
+        some_non_trump_cards = False
+        max_tries = 100
+        while not some_non_trump_cards and max_tries > 0:
+            np.random.shuffle(deck)
+            active_deck_size = DECK_SIZE - players*(round-1)
+            all_cards = deck[0:active_deck_size]
+            non_trump_cards = [c for c in all_cards if 'z' not in c]
+            some_non_trump_cards = (len(non_trump_cards) > 0)
+            max_tries -= 1
+
+        hands = [deck[(i * active_deck_size) // players:((i + 1) * active_deck_size) // players] for i in range(players)]
+
+        initial_board_state = cls(hands=hands, goal_cards=[])
+        initial_board_state.discard = deck[active_deck_size:]
+        for c in initial_board_state.discard:
+            initial_board_state.nobody_has(ACTIONS.index(c))
+        rounds_left = len(deck) // players - round + 1
+        initial_board_state.rounds_left = rounds_left
+        initial_board_state.leading = np.random.randint(players)
+        initial_board_state.turn = initial_board_state.leading
+        initial_board_state.select_goals_phase = False
+        num_goals = np.random.randint(min(len(non_trump_cards), max_goals)) + 1
+        np.random.shuffle(non_trump_cards)
+        goals = non_trump_cards[:num_goals]
+        max_num_players_with_goals = min(rounds_left, players)
+        players_with_goals = np.random.choice(range(players), max_num_players_with_goals, replace=False)
+        for goal in goals:
+            pl_idx = np.random.randint(max_num_players_with_goals)
+            initial_board_state.goals[players_with_goals[pl_idx]].append(goal)
+
+        # simulate a few random turns
+        for _ in range(cards_in_trick):
+            action = initial_board_state.choose_action(model=None, epsilon=2)
+            initial_board_state = initial_board_state.move(ACTIONS[action])
+        return initial_board_state
+
     def reward(self):
         score = 0
         if len(self.trick) == self.players:
@@ -384,9 +423,10 @@ class CrewState():
             best_reward = -np.inf
             for action in allowable_actions:
                 x = np.concatenate([v, action_vec(action)])
-                y_pred = model.predict(x)
+                y_pred = model.predict(x.reshape((1, 551)))[0]
                 if y_pred > best_reward:
                     best_action = action
+                    best_reward = y_pred
             return best_action
         else:
             return random.choice(allowable_actions)
@@ -434,3 +474,6 @@ if __name__ == '__main__':
     state.print()
     state = state.move('y8')
     state.print()
+
+    env = CrewState.gen_mid_game(3, 1, 13, 3)
+
