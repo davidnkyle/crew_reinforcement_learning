@@ -53,6 +53,31 @@ def evaluate_trick(trick):
     cards.sort(reverse=True)
     return trick.index(cards[0])
 
+def _rearrange_vec(v, turn, players=3, size=40):
+    return np.concatenate([v[((i + turn) % players)*size:(((i + turn) % players) + 1)*size] for i in range(players)])
+
+
+def _shift_colors(X, shift: int = 0):
+    return np.hstack([X[:,((i + shift) % 4)*9:(((i+shift) % 4) + 1)*9] for i in range(4)])
+
+def _shift_colors_from_X(X, shift: int = 0):
+    X = X.copy()
+    for start, end in [(0, 36), (40, 76), (80, 116), (120, 156), (160, 196), (200, 236),
+                       (276, 312), (312, 348), (348, 383), (387, 423), (427, 463), (467, 503),
+                       (510, 546)]:
+        X[:, start:end] = _shift_colors(X[:, start:end], shift)
+    return X
+
+
+def predict(model, X):
+    # disable the color shifting for now
+    # pred = np.zeros(X.shape[0])
+    # for i in range(4):
+    #     this_X = _shift_colors_from_X(X, i)
+    #     pred += model.predict(this_X) / 4
+    pred = model.predict(X)
+    return pred
+
 
 class CrewState():
     def __init__(self, hands, goal_cards):
@@ -115,7 +140,14 @@ class CrewState():
         return state
 
     @classmethod
-    def gen_mid_game(cls, players: int = 3, max_goals: int = 1, round: int = 1, cards_in_trick: int = 0):
+    def gen_mid_game(cls, players: int = 3, max_goals: int = 1, turn=0):
+        if turn < players:
+            num_goals = np.random.randint(max_goals) + 1
+            state = CrewState.generate(players, num_goals)
+            while state.select_goals_phase or state.communication_phase:
+                state.random_move()
+            for _ in range(turn):
+                state.random_move()
         deck = copy(DECK)
         some_non_trump_cards = False
         max_tries = 100
@@ -164,7 +196,7 @@ class CrewState():
             score -= 100
         return score
 
-    def to_vector(self):
+    def to_vector_old(self):
         v = np.zeros(510)
 
         idx_start = 0
@@ -219,6 +251,15 @@ class CrewState():
         # idx_start += 1
 
         return v
+
+    def to_vector(self):
+        v = self.to_vector_old()
+        for start, end in [(0, 120), (120, 240), (276, 384), (384, 387), (387, 507)]:
+            v[start:end] = _rearrange_vec(v[start:end], self.turn, self.players, (end-start)//self.players)
+        return v
+
+
+
     #
     # @staticmethod
     # def from_vector(v, captain=None, num_goals=None, coms=None):
@@ -392,6 +433,8 @@ class CrewState():
         return True
 
     def get_legal_actions(self):
+        if self.game_result is not None:
+            return ['-']
         full_hand = self.hands[self.turn]
         if self.select_goals_phase:
             return copy(self.goal_cards)
@@ -413,7 +456,8 @@ class CrewState():
             list_of_actions = ['-']
         return list_of_actions
 
-    def choose_action(self, model=None, epsilon=-1):
+
+    def _get_max_action_reward(self, model=None, epsilon=-1):
         allowable_actions = [ACTIONS.index(a) for a in self.get_legal_actions()]
         if model is None:
             epsilon = 2
@@ -423,14 +467,19 @@ class CrewState():
             best_reward = -np.inf
             for action in allowable_actions:
                 x = np.concatenate([v, action_vec(action)])
-                y_pred = model.predict(x.reshape((1, 551)))[0]
+                y_pred = predict(model, x.reshape((1, 551)))[0]
                 if y_pred > best_reward:
                     best_action = action
                     best_reward = y_pred
-            return best_action
+            return best_action, best_reward
         else:
-            return random.choice(allowable_actions)
+            return random.choice(allowable_actions), None
 
+    def choose_action(self, model=None, epsilon=-1):
+        return self._get_max_action_reward(model=model, epsilon=epsilon)[0]
+
+    def max_qsa(self, model):
+        return self._get_max_action_reward(model=model)[1]
 
     def sort_hands(self):
         for h in self.hands:
