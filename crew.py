@@ -141,13 +141,16 @@ class CrewState():
 
     @classmethod
     def gen_mid_game(cls, players: int = 3, max_goals: int = 1, turn=0):
-        if turn < players:
+        if turn <= players:
             num_goals = np.random.randint(max_goals) + 1
-            state = CrewState.generate(players, num_goals)
+            state = cls.generate(players, num_goals)
             while state.select_goals_phase or state.communication_phase:
                 state.random_move()
             for _ in range(turn):
                 state.random_move()
+            return state
+        round = (turn-1)//players
+        cards_in_trick = ((turn-1) % players) + 1
         deck = copy(DECK)
         some_non_trump_cards = False
         max_tries = 100
@@ -181,8 +184,7 @@ class CrewState():
 
         # simulate a few random turns
         for _ in range(cards_in_trick):
-            action = initial_board_state.choose_action(model=None, epsilon=2)
-            initial_board_state = initial_board_state.move(ACTIONS[action])
+            initial_board_state.random_move()
         return initial_board_state
 
     def reward(self):
@@ -359,52 +361,46 @@ class CrewState():
         return self.game_result is not None
 
     def move(self, move):
-        new = deepcopy(self)
         if move == '-':
-            return new
-        if new.select_goals_phase:
-            new.goals[new.turn].append(move)
-            new.goal_cards.remove(move)
-            new.turn = (new.turn + 1) % self.players
-            if len(new.goal_cards) == 0:
-                new.select_goals_phase = False
-                # new.communication_phase = True
-                new.turn = new.captain
-            return new
-        # if new.communication_phase:
-        #     new.coms.append(move)
-        #     new.turn = (new.turn + 1) % self.players
-        #     if len(new.coms) == 3:
-        #         new.communication_phase = False
-        #         new.turn = new.captain
-        #     return new
-        if len(new.trick) == self.players:
-            new.goals[new.turn] = [g for g in new.goals[new.turn] if g not in new.trick]
-            new.discard += new.trick
-            new.trick = []
-            new.leading = new.turn
+            return
+        if self.select_goals_phase:
+            self.goals[self.turn].append(move)
+            self.goal_cards.remove(move)
+            self.turn = (self.turn + 1) % self.players
+            if len(self.goal_cards) == 0:
+                self.select_goals_phase = False
+                # self.communication_phase = True
+                self.turn = self.captain
+            return
+        # if self.communication_phase:
+        #     self.coms.append(move)
+        #     self.turn = (self.turn + 1) % self.players
+        #     if len(self.coms) == 3:
+        #         self.communication_phase = False
+        #         self.turn = self.captain
+        #     return
+        if len(self.trick) == self.players:
+            self.goals[self.turn] = [g for g in self.goals[self.turn] if g not in self.trick]
+            self.discard += self.trick
+            self.trick = []
+            self.leading = self.turn
 
         # if player is short suited remove that from the list of possibilities
-        if len(new.trick) > 0:
-            leading_suit = new.trick[0][0]
+        if len(self.trick) > 0:
+            leading_suit = self.trick[0][0]
             if move[0] != leading_suit:
-                new.player_shortsuited(new.turn, leading_suit)
-        new.trick.append(move)
-        new.hands[new.turn].remove(move)
-        new.nobody_has(DECK.index(move))
-        if len(new.trick) < new.players:
-            new.turn = (new.turn + 1) % self.players
-            return new
-        winner = (evaluate_trick(new.trick) + new.leading) % new.players
-        # new.goals[winner] = [g for g in new.goals[winner] if g not in new.trick]
-        # new.discard += new.trick # add trick to discard
-        # new.trick = []
-        new.rounds_left -= 1
-        # new.leading = winner
-        new.turn = winner
-        if len(new.trick) == self.players:
-            new._determine_game_result() # update game result variable
-        return new
+                self.player_shortsuited(self.turn, leading_suit)
+        self.trick.append(move)
+        self.hands[self.turn].remove(move)
+        self.nobody_has(DECK.index(move))
+        if len(self.trick) < self.players:
+            self.turn = (self.turn + 1) % self.players
+            return
+        winner = (evaluate_trick(self.trick) + self.leading) % self.players
+        self.rounds_left -= 1
+        self.turn = winner
+        if len(self.trick) == self.players:
+            self._determine_game_result() # update game result variable
 
     def is_move_legal(self, move):
         if self.select_goals_phase:
@@ -456,6 +452,8 @@ class CrewState():
             list_of_actions = ['-']
         return list_of_actions
 
+    def random_move(self):
+        self.move(random.choice(self.get_legal_actions()))
 
     def _get_max_action_reward(self, model=None, epsilon=-1):
         allowable_actions = [ACTIONS.index(a) for a in self.get_legal_actions()]
