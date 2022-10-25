@@ -1,6 +1,10 @@
+import random
 import time
+from collections import namedtuple
 
 import numpy as np
+from keras.models import clone_model
+from keras.saving.save import load_model
 from tensorflow.keras import Sequential
 from tensorflow.keras.layers import Dense, Input
 import tensorflow as tf
@@ -11,137 +15,172 @@ from crew import CrewState,  ACTIONS
 MAX_TURN = 40
 EPSILON=0.01
 
+def qsa(network, states, actions):
+    q_values_all = network(states)
+    q_values = tf.gather_nd(q_values_all, tf.stack(
+        [tf.range(q_values_all.shape[0]),  # this just gets the Q values associated with the single action
+         tf.cast(actions, tf.int32)], axis=1))
+    return q_values
+
+
+def get_experiences(memory_buffer, episodes):
+    batch_ratio = np.sqrt(episodes/len(memory_buffer))
+    mini_batch_size = int(batch_ratio*len(memory_buffer))
+    experiences = random.sample(memory_buffer, k=mini_batch_size)
+    states = tf.convert_to_tensor(np.array([e.state for e in experiences if e is not None]), dtype=tf.float32)
+    actions = tf.convert_to_tensor(np.array([e.action for e in experiences if e is not None]), dtype=tf.float32)
+    rewards = tf.convert_to_tensor(np.array([e.reward for e in experiences if e is not None]), dtype=tf.float32)
+    next_states = tf.convert_to_tensor(np.array([e.next_state for e in experiences if e is not None]),
+                                       dtype=tf.float32)
+    done_vals = tf.convert_to_tensor(np.array([e.done for e in experiences if e is not None]).astype(np.uint8),
+                                     dtype=tf.float32)
+    allowable_actions_of_next_state_vals = tf.convert_to_tensor(
+        np.array([e.next_actions for e in experiences if e is not None]), dtype=tf.float32)
+    return (states, actions, rewards, next_states, done_vals, allowable_actions_of_next_state_vals)
+
+
 if __name__ == '__main__':
     start = time.time()
+    num_episodes = 1000
+    players = 3
+    max_goals = 1
 
-    num_actions = len(ACTIONS)
-    state_size = 510
-    layer_1_size = 2000
-    layer_2_size = 1000
-    layer_3_size = 500
+    for min_turn in reversed(range(MAX_TURN)):
+        print(min_turn)
 
-    # Q network
-    q_network = Sequential([
-        Input(state_size),
-        Dense(layer_1_size, activation='relu'),
-        Dense(layer_2_size, activation='relu'),
-        Dense(layer_3_size, activation='relu'),
-        Dense(num_actions, activation='linear')
-    ])
+        if min_turn == MAX_TURN-1:
 
-    # target Q network
-    target_q_network = Sequential([
-        Input(state_size),
-        Dense(layer_1_size, activation='relu'),
-        Dense(layer_2_size, activation='relu'),
-        Dense(layer_3_size, activation='relu'),
-        Dense(num_actions, activation='linear')
-    ])
+            # target Q network
+            target_q_network = Sequential([
+                Input(CrewState.state_size),
+                Dense(500, activation='relu'),
+                Dense(200, activation='relu'),
+                Dense(100, activation='relu'),
+                Dense(50, activation='relu'),
+                Dense(len(ACTIONS), activation='linear')
+            ])
+        else:
+            # network_read_path = 'model{}.h5'.format(min_turn+1)
+            # target_q_network = load_model(network_read_path)
+            target_q_network = q_network
 
-    # create data
-    print('generating games')
+        ##
+        # Generate Data
+        #
+        print('generating games')
 
-    min_turn = 39
-    num_episodes = 10000
-    players=3
-    max_goals=1
+        experience = namedtuple("Experience", field_names=[
+            "state", "action", "reward", "next_state", "done", "next_actions"])
+        experiences = []
 
-    this_state_list = []
-    this_state_reward_list = []
-    this_state_done_list = []
-    this_action_list = []
-    next_state_list = []
-    next_allowable_action_list = []
+        for i in range(num_episodes):
 
-    for i in range(num_episodes):
-
-        start_turn = np.random.randint(min_turn, MAX_TURN)
-        env = CrewState.gen_mid_game(players=players, max_goals=max_goals, turn=start_turn)
-        allowable_actions = [ACTIONS.index(a) for a in env.get_legal_actions()]
-        state_vec = env.to_vector()
-
-        for turn in range(min_turn, MAX_TURN):
-            this_state_list.append(state_vec)
-            reward = env.reward()
-            this_state_reward_list.append(reward)
-            done = env.done()
-            this_state_done_list.append(done)
-            # if np.random.random() > EPSILON:
-            #     pass
-            #     # add some stuff here later
-            # else:
-            action = np.random.choice(allowable_actions)
-
-            this_action_list.append(action)
-            env.move(ACTIONS[action])
+            start_turn = np.random.randint(min_turn, MAX_TURN)
+            env = CrewState.gen_mid_game(players=players, max_goals=max_goals, turn=start_turn)
             state_vec = env.to_vector()
-            next_state_list.append(state_vec)
             allowable_actions = [ACTIONS.index(a) for a in env.get_legal_actions()]
             next_actions_binary = np.zeros(len(ACTIONS))
             next_actions_binary[allowable_actions] = 1
-            next_allowable_action_list.append(next_actions_binary)
 
-    states = np.array(this_state_list)
-    rewards = np.array(this_state_reward_list)
-    done_vals = np.array(this_state_done_list)
-    actions = np.array(this_action_list)
-    next_states = np.array(next_state_list)
-    next_allowable_actions = np.array(next_allowable_action_list)
+            for turn in range(min_turn, MAX_TURN):
+                reward = env.reward()
+                done = env.done()
+                if np.random.random() > EPSILON:
+                    q_values_all = target_q_network(np.expand_dims(state_vec, axis=0))
+                    action = np.argmax(q_values_all + (next_actions_binary - 1) * 10000)
+                else:
+                    action = np.random.choice(allowable_actions)
 
-    # train model
-    print('training model')
+                env.move(ACTIONS[action])
+                next_state_vec = env.to_vector()
+                allowable_actions = [ACTIONS.index(a) for a in env.get_legal_actions()]
+                next_actions_binary = np.zeros(len(ACTIONS))
+                next_actions_binary[allowable_actions] = 1
+                experiences.append(experience(state=state_vec, action=action, reward=reward,
+                                              next_state=next_state_vec, done=done, next_actions=next_actions_binary))
+                state_vec = next_state_vec
+                if done:
+                    break
 
-    opt = tf.keras.optimizers.Adam(0.001)
-    mse = tf.keras.losses.MSE
+        states, actions, rewards, next_states, done_vals, next_allowable_actions = get_experiences(experiences, num_episodes)
+        num_rows = states.shape[0]
 
-    # define target output
-    max_qsa = tf.reduce_max((target_q_network(next_states) + (next_allowable_actions - 1) * 10000), axis=-1)
-    y_targets = rewards + (1 - done_vals) * GAMMA * max_qsa
+        # define target output
+        max_qsa = tf.reduce_max((target_q_network(next_states) + (next_allowable_actions - 1) * 10000), axis=-1)
+        y_targets = rewards + (1 - done_vals) * GAMMA * max_qsa
 
-    SIZE = int(states.shape[0]*0.7)
-    batch = 100
-    for i in range(10):
-        for j in range(0, SIZE, batch):
-            with tf.GradientTape() as tape:
-                end_idx = min(SIZE, j+batch)
-                q_values = q_network(states[j:end_idx])
-                q_values = tf.gather_nd(q_values, tf.stack([tf.range(q_values.shape[0]), # this just gets the Q values associated with the single action
-                                                            tf.cast(actions[j:end_idx], tf.int32)], axis=1)) # this could be a useful function for the above
-                loss = mse(y_targets[j:end_idx], q_values)
-            grads = tape.gradient(loss, q_network.trainable_variables)
-            processed_grads = [g for g in grads]
-            grads_and_vars = zip(processed_grads, q_network.trainable_variables)
-            opt.apply_gradients(grads_and_vars)
+        # print('saving data')
+        # table = np.hstack([states, actions.numpy().reshape((num_rows, 1)), y_targets.numpy().reshape((num_rows, 1))])
+        # np.save('data{}.npy'.format(min_turn), table)
 
-    print('evaluation')
+        ##
+        # train model
+        #
+        print('training evaluation model')
 
-    q_values_eval = q_network(states)
-    q_values_eval = tf.gather_nd(q_values_eval, tf.stack(
-        [tf.range(q_values_eval.shape[0]),  # this just gets the Q values associated with the single action
-         tf.cast(actions, tf.int32)], axis=1))
+        mse = tf.keras.losses.MSE
 
-    train_mse = mse(y_targets[:SIZE], q_values_eval[:SIZE]).numpy()
-    test_mse = mse(y_targets[SIZE:], q_values_eval[SIZE:]).numpy()
-    print(train_mse)
-    print(test_mse)
-    print(np.sqrt(train_mse))
-    print(np.sqrt(test_mse))
+        def train_model(network, size):
+            opt = tf.keras.optimizers.Adam(0.001)
 
-    # target Q network
-    # c_network = Sequential([
-    #     Input(state_size),
-    #     Dense(layer_1_size, activation='relu'),
-    #     Dense(layer_2_size, activation='relu'),
-    #     Dense(layer_3_size, activation='relu'),
-    #     Dense(1, activation='linear')
-    # ])
-    #
-    # c_network.compile(optimizer=tf.keras.optimizers.Adam(0.001), loss=tf.keras.losses.MSE)
-    # c_network.fit(x=states[:SIZE], y=y_targets[:SIZE])
-    #
-    # c_eval = c_network(states)
-    # print(mse(y_targets[:SIZE], tf.reshape(c_eval[:SIZE], SIZE)).numpy())
-    # print(mse(y_targets[SIZE:], tf.reshape(c_eval[SIZE:], states.shape[0]-SIZE)).numpy())
+            # @tf.function
+            def _train_model():
+                batch = 100
+                for i in range(10):
+                    for j in range(0, size, batch):
+                        with tf.GradientTape() as tape:
+                            end_idx = min(size, j+batch)
+                            q_values = qsa(network, states[j:end_idx], actions[j:end_idx])
+                            loss = mse(y_targets[j:end_idx], q_values)
+                        grads = tape.gradient(loss, network.trainable_variables)
+                        processed_grads = [g for g in grads]
+                        grads_and_vars = zip(processed_grads, network.trainable_variables)
+                        opt.apply_gradients(grads_and_vars)
+            _train_model()
+
+        test_idx = int(num_rows * 0.7)
+        eval_q_network = clone_model(target_q_network)
+        train_model(eval_q_network, test_idx)
+
+        q_values_eval = qsa(eval_q_network, states, actions)
+
+        train_mse = mse(y_targets[:test_idx], q_values_eval[:test_idx]).numpy()
+        test_mse = mse(y_targets[test_idx:], q_values_eval[test_idx:]).numpy()
+        # print(train_mse)
+        # print(test_mse)
+        print(np.sqrt(train_mse))
+        print(np.sqrt(test_mse))
+
+        q_network = eval_q_network
+        # print('train real model')
+        #
+        # q_network = clone_model(target_q_network)
+        # train_model(q_network, num_rows)
+
+        # print('save model')
+        # network_write_path = 'model{}.h5'.format(min_turn)
+        # q_network.save(network_write_path, save_format='h5')
+
+    print('Win rate')
+    wins = 0
+    games = 1000
+    for _ in range(games):
+        game = CrewState.generate(players, num_goals=max_goals)
+        game.random_move()
+        while game.game_result is None:
+            state_vec = game.to_vector()
+            allowable_actions = [ACTIONS.index(a) for a in game.get_legal_actions()]
+            next_actions_binary = np.zeros(len(ACTIONS))
+            next_actions_binary[allowable_actions] = 1
+            q_values_all = q_network(np.expand_dims(state_vec, axis=0))
+            action = np.argmax(q_values_all + (next_actions_binary - 1) * 10000)
+            game.move(ACTIONS[action])
+        wins += game.game_result
+    print(wins/games)
+
+
+    tot_time = time.time() - start
+    print(f"\nTotal Runtime: {tot_time:.2f} s ({(tot_time / 60):.2f} min)")
 
 
 

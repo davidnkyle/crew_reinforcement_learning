@@ -80,6 +80,8 @@ def predict(model, X):
 
 
 class CrewState():
+    state_size = 510
+
     def __init__(self, hands, goal_cards):
         self.players = len(hands)
         if (self.players < 3) or (self.players > 5):
@@ -149,7 +151,7 @@ class CrewState():
             for _ in range(turn):
                 state.random_move()
             return state
-        round = (turn-1)//players
+        round = (turn-1)//players + 1
         cards_in_trick = ((turn-1) % players) + 1
         deck = copy(DECK)
         some_non_trump_cards = False
@@ -196,10 +198,10 @@ class CrewState():
             score += 100
         if self.game_result == 0:
             score -= 100
-        return score
+        return score/100
 
     def to_vector_old(self):
-        v = np.zeros(510)
+        v = np.zeros(self.state_size)
 
         idx_start = 0
 
@@ -501,6 +503,7 @@ class CrewState():
         trick_str[self.leading] += '*'
         trick_str[self.turn] = '[' + trick_str[self.turn] + ']'
         print('{:<15}:{:^24s}|{:^24s}|{:^24s}'.format('TABLE', *trick_str))
+
 
 
 if __name__ == '__main__':
